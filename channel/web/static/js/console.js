@@ -1932,7 +1932,7 @@ function onAddChannelSelect(chName) {
                     ${currentLang === 'zh' ? '开始扫码登录' : 'Start QR Login'}
                 </button>
             </div>
-            <div id="weixin-qr-panel" class="flex flex-col items-center py-4 hidden"></div>`;
+            <div id="weixin-qr-panel-${instanceName || ''}" class="flex flex-col items-center py-4 hidden"></div>`;
         return;
     }
 
