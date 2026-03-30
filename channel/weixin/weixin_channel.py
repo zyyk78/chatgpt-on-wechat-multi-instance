@@ -35,15 +35,24 @@ QR_LOGIN_TIMEOUT_S = 480
 QR_MAX_REFRESHES = 10
 
 
-# Global credentials file path for all instances
+# Global credentials file path for all instances (backward compatibility)
 GLOBAL_CREDENTIALS_PATH = os.path.expanduser("~/.weixin_cow_credentials.json")
+
+
+def _get_credentials_path() -> str:
+    """Get credentials file path from config, fallback to default."""
+    cred_path = conf().get("weixin_credentials_path", "")
+    if cred_path:
+        return os.path.expanduser(cred_path)
+    return GLOBAL_CREDENTIALS_PATH
 
 
 def _load_credentials(instance_name: str) -> dict:
     """Load saved credentials for a specific instance from global credentials file."""
+    creds_path = _get_credentials_path()
     try:
-        if os.path.exists(GLOBAL_CREDENTIALS_PATH):
-            with open(GLOBAL_CREDENTIALS_PATH, "r") as f:
+        if os.path.exists(creds_path):
+            with open(creds_path, "r") as f:
                 all_creds = json.load(f)
             logger.info(f"[Weixin] _load_credentials: instance='{instance_name}', file has keys={list(all_creds.keys())}")
 
@@ -79,9 +88,10 @@ def check_credential_conflict(new_token: str, new_bot_id: str = "", new_user_id:
     Returns (has_conflict, conflicting_instance_name, conflict_reason)
     """
     try:
-        if not os.path.exists(GLOBAL_CREDENTIALS_PATH):
+        creds_path = _get_credentials_path()
+        if not os.path.exists(creds_path):
             return (False, "", "")
-        with open(GLOBAL_CREDENTIALS_PATH, "r") as f:
+        with open(creds_path, "r") as f:
             all_creds = json.load(f)
 
         for inst_name, creds in all_creds.items():
@@ -106,11 +116,12 @@ def check_credential_conflict(new_token: str, new_bot_id: str = "", new_user_id:
 def _save_credentials(instance_name: str, data: dict):
     """Save credentials for a specific instance to global credentials file."""
     try:
+        creds_path = _get_credentials_path()
         # Load existing credentials
         all_creds = {}
-        if os.path.exists(GLOBAL_CREDENTIALS_PATH):
+        if os.path.exists(creds_path):
             try:
-                with open(GLOBAL_CREDENTIALS_PATH, "r") as f:
+                with open(creds_path, "r") as f:
                     all_creds = json.load(f)
                 logger.info(f"[Weixin] _save_credentials: loaded existing creds, keys={list(all_creds.keys())}")
 
@@ -137,12 +148,12 @@ def _save_credentials(instance_name: str, data: dict):
         all_creds[instance_name] = data
 
         # Save back
-        os.makedirs(os.path.dirname(GLOBAL_CREDENTIALS_PATH), exist_ok=True)
-        with open(GLOBAL_CREDENTIALS_PATH, "w") as f:
+        os.makedirs(os.path.dirname(creds_path), exist_ok=True)
+        with open(creds_path, "w") as f:
             json.dump(all_creds, f, indent=2)
         logger.info(f"[Weixin] _save_credentials: saved instance '{instance_name}', file now has keys={list(all_creds.keys())}")
         try:
-            os.chmod(GLOBAL_CREDENTIALS_PATH, 0o600)
+            os.chmod(creds_path, 0o600)
         except Exception:
             pass
     except Exception as e:
@@ -152,18 +163,19 @@ def _save_credentials(instance_name: str, data: dict):
 def _remove_credentials(instance_name: str):
     """Remove credentials for a specific instance from global credentials file."""
     try:
-        if not os.path.exists(GLOBAL_CREDENTIALS_PATH):
+        creds_path = _get_credentials_path()
+        if not os.path.exists(creds_path):
             return
-        with open(GLOBAL_CREDENTIALS_PATH, "r") as f:
+        with open(creds_path, "r") as f:
             all_creds = json.load(f)
 
         if instance_name in all_creds:
             del all_creds[instance_name]
-            with open(GLOBAL_CREDENTIALS_PATH, "w") as f:
+            with open(creds_path, "w") as f:
                 json.dump(all_creds, f, indent=2)
             logger.info(f"[Weixin] _remove_credentials: removed instance '{instance_name}', file now has keys={list(all_creds.keys())}")
             try:
-                os.chmod(GLOBAL_CREDENTIALS_PATH, 0o600)
+                os.chmod(creds_path, 0o600)
             except Exception:
                 pass
     except Exception as e:
@@ -222,7 +234,8 @@ class WeixinChannel(ChatChannel):
         self.login_status = self.LOGIN_STATUS_OK
 
         display_name = f":{instance_name}" if instance_name else ""
-        logger.info(f"[Weixin{display_name}] 微信通道已启动，凭证保存在 {GLOBAL_CREDENTIALS_PATH}，"
+        creds_path = _get_credentials_path()
+        logger.info(f"[Weixin{display_name}] 微信通道已启动，凭证保存在 {creds_path}，"
                      f"如需重新扫码登录请删除对应凭证后重启")
         self.report_startup_success()
 
@@ -268,12 +281,13 @@ class WeixinChannel(ChatChannel):
         base_url = self.api.base_url if self.api else DEFAULT_BASE_URL
         # Remove credentials for this instance from global credentials file
         try:
-            if os.path.exists(GLOBAL_CREDENTIALS_PATH):
-                with open(GLOBAL_CREDENTIALS_PATH, "r") as f:
+            creds_path = _get_credentials_path()
+            if os.path.exists(creds_path):
+                with open(creds_path, "r") as f:
                     all_creds = json.load(f)
                 if self._instance_name in all_creds:
                     del all_creds[self._instance_name]
-                    with open(GLOBAL_CREDENTIALS_PATH, "w") as f:
+                    with open(creds_path, "w") as f:
                         json.dump(all_creds, f, indent=2)
         except Exception:
             pass
@@ -421,7 +435,7 @@ class WeixinChannel(ChatChannel):
                     "user_id": user_id,
                 }
                 _save_credentials(self._instance_name, creds)
-                logger.info(f"[Weixin] Credentials saved to {GLOBAL_CREDENTIALS_PATH} for instance '{self._instance_name}'")
+                logger.info(f"[Weixin] Credentials saved to {_get_credentials_path()} for instance '{self._instance_name}'")
 
                 return {"token": bot_token, "base_url": result_base_url}
 
