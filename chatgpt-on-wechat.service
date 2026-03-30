@@ -1,0 +1,24 @@
+[Unit]
+Description=ChatGPT on WeChat Service
+After=network.target
+
+[Service]
+Type=simple
+User=chatbot
+Group=chatbot
+WorkingDirectory=/opt/cow/chatgpt-on-wechat
+ExecStart=/bin/bash -c "source /opt/anaconda3/etc/profile.d/conda.sh && conda activate cow && python /opt/cow/chatgpt-on-wechat/app.py"
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/opt/cow/chatgpt-on-wechat/run.log
+StandardError=append:/opt/cow/chatgpt-on-wechat/run.log
+Environment=HOME=/home/chatbot
+Environment=USER=chatbot
+Environment=PATH=/opt/anaconda3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+
+# 允许绑定1024以下端口（如果需要）
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
