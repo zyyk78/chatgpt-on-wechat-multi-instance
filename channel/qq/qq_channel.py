@@ -54,7 +54,7 @@ RESUMABLE_CLOSE_CODES = {4008, 4009}
 @singleton
 class QQChannel(ChatChannel):
 
-    def __init__(self):
+    def __init__(self, _instance_name=""):
         super().__init__()
         self.app_id = ""
         self.app_secret = ""
@@ -76,17 +76,37 @@ class QQChannel(ChatChannel):
 
         self.received_msgs = ExpiredDict(60 * 60 * 7.1)
         self._msg_seq_counter = {}
+        self._instance_name = _instance_name
 
         conf()["group_name_white_list"] = ["ALL_GROUP"]
         conf()["single_chat_prefix"] = [""]
+
+    def _fetch_config(self):
+        """Fetch configuration for this instance."""
+        channel_type, instance_name = self._parse_channel_name()
+        config = self._get_instance_config(channel_type, instance_name)
+        self.app_id = config.get("qq_app_id", "")
+        self.app_secret = config.get("qq_app_secret", "")
+
+    def _parse_channel_name(self):
+        """Parse channel name into (channel_type, instance_name)."""
+        channel_name = getattr(self, 'channel_type', 'qq')
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
+
+    def _get_instance_config(self, channel_type, instance_name):
+        """Get configuration for this specific instance."""
+        from channel.utils import get_channel_instance_config
+        return get_channel_instance_config(channel_type, instance_name, conf())
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def startup(self):
-        self.app_id = conf().get("qq_app_id", "")
-        self.app_secret = conf().get("qq_app_secret", "")
+        self._fetch_config()
 
         if not self.app_id or not self.app_secret:
             err = "[QQ] qq_app_id and qq_app_secret are required"

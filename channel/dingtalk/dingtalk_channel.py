@@ -86,15 +86,12 @@ def _check(func):
 
 @singleton
 class DingTalkChanel(ChatChannel, dingtalk_stream.ChatbotHandler):
-    dingtalk_client_id = conf().get('dingtalk_client_id')
-    dingtalk_client_secret = conf().get('dingtalk_client_secret')
-
     def setup_logger(self):
         # Suppress verbose logs from dingtalk_stream SDK
         logging.getLogger("dingtalk_stream").setLevel(logging.WARNING)
         return logging.getLogger("DingTalk")
 
-    def __init__(self):
+    def __init__(self, _instance_name=""):
         super().__init__()
         super(dingtalk_stream.ChatbotHandler, self).__init__()
         self.logger = self.setup_logger()
@@ -103,6 +100,8 @@ class DingTalkChanel(ChatChannel, dingtalk_stream.ChatbotHandler):
         self._stream_client = None
         self._running = False
         self._event_loop = None
+        self._instance_name = _instance_name
+        self._fetch_config()
         logger.debug("[DingTalk] client_id={}, client_secret={} ".format(
             self.dingtalk_client_id, self.dingtalk_client_secret))
         # 无需群校验和前缀
@@ -114,6 +113,26 @@ class DingTalkChanel(ChatChannel, dingtalk_stream.ChatbotHandler):
         self._access_token_expires_at = 0
         # Robot code cache (extracted from incoming messages)
         self._robot_code = None
+
+    def _fetch_config(self):
+        """Fetch configuration for this instance."""
+        channel_type, instance_name = self._parse_channel_name()
+        config = self._get_instance_config(channel_type, instance_name)
+        self.dingtalk_client_id = config.get('dingtalk_client_id')
+        self.dingtalk_client_secret = config.get('dingtalk_client_secret')
+
+    def _parse_channel_name(self):
+        """Parse channel name into (channel_type, instance_name)."""
+        channel_name = getattr(self, 'channel_type', 'dingtalk')
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
+
+    def _get_instance_config(self, channel_type, instance_name):
+        """Get configuration for this specific instance."""
+        from channel.utils import get_channel_instance_config
+        return get_channel_instance_config(channel_type, instance_name, conf())
 
     def _open_connection(self, client):
         """
@@ -146,8 +165,6 @@ class DingTalkChanel(ChatChannel, dingtalk_stream.ChatbotHandler):
 
     def startup(self):
         import asyncio
-        self.dingtalk_client_id = conf().get('dingtalk_client_id')
-        self.dingtalk_client_secret = conf().get('dingtalk_client_secret')
         self._running = True
         credential = dingtalk_stream.Credential(self.dingtalk_client_id, self.dingtalk_client_secret)
         client = dingtalk_stream.DingTalkStreamClient(credential)
@@ -220,6 +237,8 @@ class DingTalkChanel(ChatChannel, dingtalk_stream.ChatbotHandler):
                     time.sleep(0.1)
             finally:
                 self._event_loop = None
+        self._instance_name = _instance_name
+        self._fetch_config()
                 try:
                     loop.close()
                 except Exception:

@@ -1577,6 +1577,7 @@ function showConfirmDialog({ title, message, okText, cancelText, onConfirm }) {
 // Channels View
 // =====================================================================
 let channelsData = [];
+let activeInstancesData = [];
 
 function loadChannelsView() {
     const container = document.getElementById('channels-content');
@@ -1586,6 +1587,7 @@ function loadChannelsView() {
     fetch('/api/channels').then(r => r.json()).then(data => {
         if (data.status !== 'success') return;
         channelsData = data.channels || [];
+        activeInstancesData = data.active_instances || [];
         renderActiveChannels();
     }).catch(() => {
         container.innerHTML = '<p class="text-sm text-red-400 py-8 text-center">Failed to load channels</p>';
@@ -1599,9 +1601,19 @@ function renderActiveChannels() {
     container.innerHTML = '';
     closeAddChannelPanel();
 
-    const activeChannels = channelsData.filter(ch => ch.active);
+    // Group instances by base channel type
+    const instancesByType = {};
+    activeInstancesData.forEach(inst => {
+        if (!instancesByType[inst.type]) {
+            instancesByType[inst.type] = [];
+        }
+        instancesByType[inst.type].push(inst);
+    });
 
-    if (activeChannels.length === 0) {
+    // Get channel types that have active instances
+    const activeChannelTypes = Object.keys(instancesByType);
+
+    if (activeChannelTypes.length === 0) {
         container.innerHTML = `
             <div class="flex flex-col items-center justify-center py-20">
                 <div class="w-16 h-16 rounded-2xl bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center mb-4">
@@ -1613,41 +1625,55 @@ function renderActiveChannels() {
         return;
     }
 
-    activeChannels.forEach(ch => {
+    activeChannelTypes.forEach(chType => {
+        const ch = channelsData.find(c => c.name === chType);
+        if (!ch) return;
+
+        const instances = instancesByType[chType];
         const label = (typeof ch.label === 'object') ? (ch.label[currentLang] || ch.label.en) : ch.label;
-        const card = document.createElement('div');
-        card.className = 'bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-6';
-        card.id = `channel-card-${ch.name}`;
 
-        const fieldsHtml = buildChannelFieldsHtml(ch.name, ch.fields || []);
-        const hasFields = (ch.fields || []).length > 0;
+        // Create a card for each instance
+        instances.forEach(inst => {
+            const card = document.createElement('div');
+            card.className = 'bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-6 mb-4';
+            card.id = `channel-card-${inst.name}`;
 
-        const weixinWaiting = ch.name === 'weixin' && ch.login_status && ch.login_status !== 'logged_in';
-        let statusDot, statusText;
-        if (weixinWaiting) {
-            statusDot = 'bg-amber-400 animate-pulse';
-            statusText = ch.login_status === 'scanned'
-                ? `<span class="text-xs text-primary-500">${t('weixin_scan_scanned')}</span>`
-                : `<span class="text-xs text-amber-500">${t('weixin_scan_waiting')}</span>`;
-        } else {
-            statusDot = 'bg-primary-400';
-            statusText = `<span class="text-xs text-primary-500">${t('channels_connected')}</span>`;
-        }
+            const hasInstanceName = inst.instance_name && inst.instance_name !== '';
 
-        card.innerHTML = `
-            <div class="flex items-center gap-4${hasFields || weixinWaiting ? ' mb-5' : ''}">
+            // Get login_status from instance data (for weixin) or fallback to channel data
+            const loginStatus = inst.login_status || ch.login_status || "";
+            const weixinWaiting = ch.name === 'weixin' && loginStatus && loginStatus !== 'logged_in';
+            let statusDot, statusText;
+            if (weixinWaiting) {
+                statusDot = 'bg-amber-400 animate-pulse';
+                statusText = loginStatus === 'scanned'
+                    ? `<span class="text-xs text-primary-500">${t('weixin_scan_scanned')}</span>`
+                    : `<span class="text-xs text-amber-500">${t('weixin_scan_waiting')}</span>`;
+            } else {
+                statusDot = 'bg-primary-400';
+                statusText = `<span class="text-xs text-primary-500">${t('channels_connected')}</span>`;
+            }
+
+            // Instance badge for multi-instance display
+            const instanceBadge = hasInstanceName
+                ? `<span class="px-2 py-0.5 rounded-full bg-${ch.color}-100 dark:bg-${ch.color}-900/30 text-${ch.color}-600 dark:text-${ch.color}-400 text-xs font-medium">${escapeHtml(inst.instance_name)}</span>`
+                : '';
+
+            card.innerHTML = `
+            <div class="flex items-center gap-4 mb-5">
                 <div class="w-10 h-10 rounded-xl bg-${ch.color}-50 dark:bg-${ch.color}-900/20 flex items-center justify-center flex-shrink-0">
                     <i class="fas ${ch.icon} text-${ch.color}-500 text-base"></i>
                 </div>
                 <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap">
                         <span class="font-semibold text-slate-800 dark:text-slate-100">${escapeHtml(label)}</span>
+                        ${instanceBadge}
                         <span class="w-2 h-2 rounded-full ${statusDot}"></span>
                         ${statusText}
                     </div>
-                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">${escapeHtml(ch.name)}</p>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">${escapeHtml(inst.name)}</p>
                 </div>
-                <button onclick="disconnectChannel('${ch.name}')"
+                <button onclick="disconnectChannel('${ch.name}', '${inst.instance_name || ''}')"
                     class="px-3 py-1.5 rounded-lg text-xs font-medium
                            bg-red-50 dark:bg-red-900/20 text-red-500 dark:text-red-400
                            hover:bg-red-100 dark:hover:bg-red-900/40
@@ -1661,24 +1687,14 @@ function renderActiveChannels() {
                            cursor-pointer transition-colors duration-150">
                     ${t('weixin_scan_title')}
                 </button>
-            </div>` : ''}
-            ${hasFields ? `<div class="space-y-4">
-                ${fieldsHtml}
-                <div class="flex items-center justify-end gap-3 pt-1">
-                    <span id="ch-status-${ch.name}" class="text-xs text-primary-500 opacity-0 transition-opacity duration-300"></span>
-                    <button onclick="saveChannelConfig('${ch.name}')"
-                        class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium
-                               cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
-                        id="ch-save-${ch.name}">${t('channels_save')}</button>
-                </div>
             </div>` : ''}`;
 
-        container.appendChild(card);
-        bindSecretFieldEvents(card);
+            container.appendChild(card);
 
-        if (weixinWaiting) {
-            startWeixinActiveStatusPoll();
-        }
+            if (weixinWaiting) {
+                startWeixinActiveStatusPoll();
+            }
+        });
     });
 }
 
@@ -1777,26 +1793,29 @@ function saveChannelConfig(chName) {
     .finally(() => { if (btn) btn.disabled = false; });
 }
 
-function disconnectChannel(chName) {
+function disconnectChannel(chName, instanceName = '') {
     const ch = channelsData.find(c => c.name === chName);
     const label = ch ? ((typeof ch.label === 'object') ? (ch.label[currentLang] || ch.label.en) : ch.label) : chName;
+    const displayName = instanceName ? `${label}:${instanceName}` : label;
 
     showConfirmDialog({
         title: t('channels_disconnect'),
-        message: t('channels_disconnect_confirm'),
+        message: currentLang === 'zh'
+            ? `确认断开通道 "${displayName}"？配置将保留但通道会停止运行。`
+            : `Disconnect channel "${displayName}"? Config will be preserved but the channel will stop.`,
         okText: t('channels_disconnect'),
         cancelText: t('channels_cancel'),
         onConfirm: () => {
             fetch('/api/channels', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'disconnect', channel: chName })
+                body: JSON.stringify({ action: 'disconnect', channel: chName, instance_name: instanceName })
             })
             .then(r => r.json())
             .then(data => {
                 if (data.status === 'success') {
-                    if (ch) ch.active = false;
-                    renderActiveChannels();
+                    // Reload to get fresh active_instances
+                    loadChannelsView();
                 }
             })
             .catch(() => {});
@@ -1807,15 +1826,16 @@ function disconnectChannel(chName) {
 // --- Add channel panel ---
 function openAddChannelPanel() {
     const panel = document.getElementById('channels-add-panel');
-    const activeNames = new Set(channelsData.filter(c => c.active).map(c => c.name));
-    const available = channelsData.filter(c => !activeNames.has(c.name));
+    // For multi-instance support, all channel types are available
+    // (even if one instance is active, user can still add another instance)
+    const available = [...channelsData];
 
     const content = document.getElementById('channels-content');
-    if (activeNames.size === 0 && content) content.classList.add('hidden');
+    if (available.length === 0 && content) content.classList.add('hidden');
 
     if (available.length === 0) {
         panel.innerHTML = `<div class="bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-6 text-center">
-            <p class="text-sm text-slate-500 dark:text-slate-400">${currentLang === 'zh' ? '所有通道均已接入' : 'All channels are already connected'}</p>
+            <p class="text-sm text-slate-500 dark:text-slate-400">${currentLang === 'zh' ? '暂无可接入的通道' : 'No channels available'}</p>
             <button onclick="closeAddChannelPanel()" class="mt-3 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer">${t('channels_cancel')}</button>
         </div>`;
         panel.classList.remove('hidden');
@@ -1846,6 +1866,16 @@ function openAddChannelPanel() {
                     </div>
                     <div class="cfg-dropdown-menu"></div>
                 </div>
+            </div>
+            <div id="add-channel-instance-name" class="mb-4 hidden">
+                <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+                    ${currentLang === 'zh' ? '实例名称（可选，留空为默认实例）' : 'Instance name (optional, empty for default)'}
+                </label>
+                <input id="add-channel-instance-input" type="text"
+                    class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10
+                           bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100
+                           text-sm focus:outline-none focus:ring-2 focus:ring-primary-400"
+                    placeholder="${currentLang === 'zh' ? '例如: instance1' : 'e.g., instance1'}">
             </div>
             <div id="add-channel-fields" class="space-y-4"></div>
             <div id="add-channel-actions" class="hidden flex items-center justify-end gap-3 pt-4">
@@ -1881,25 +1911,36 @@ function onAddChannelSelect(chName) {
     stopWeixinQrPoll();
     const fieldsContainer = document.getElementById('add-channel-fields');
     const actions = document.getElementById('add-channel-actions');
+    const instanceNameContainer = document.getElementById('add-channel-instance-name');
 
     if (!chName) {
         fieldsContainer.innerHTML = '';
         actions.classList.add('hidden');
+        if (instanceNameContainer) instanceNameContainer.classList.add('hidden');
         return;
     }
 
     if (chName === 'weixin') {
+        // For weixin, show instance name input and a button to start QR login
+        if (instanceNameContainer) instanceNameContainer.classList.remove('hidden');
         actions.classList.add('hidden');
         fieldsContainer.innerHTML = `
-            <div id="weixin-qr-panel" class="flex flex-col items-center py-4">
-                <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${t('weixin_scan_loading')}</p>
-            </div>`;
-        startWeixinQrLogin();
+            <div class="flex flex-col items-center py-4">
+                <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${currentLang === 'zh' ? '请输入实例名称，然后点击下方按钮开始扫码' : 'Enter instance name, then click the button below to start QR login'}</p>
+                <button id="weixin-start-qr-btn" onclick="startWeixinQrForInstance()"
+                    class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium cursor-pointer transition-colors duration-150">
+                    ${currentLang === 'zh' ? '开始扫码登录' : 'Start QR Login'}
+                </button>
+            </div>
+            <div id="weixin-qr-panel" class="flex flex-col items-center py-4 hidden"></div>`;
         return;
     }
 
     const ch = channelsData.find(c => c.name === chName);
     if (!ch) return;
+
+    // Show instance name input for non-weixin channels
+    if (instanceNameContainer) instanceNameContainer.classList.remove('hidden');
 
     fieldsContainer.innerHTML = buildChannelFieldsHtml(chName, ch.fields || []);
     bindSecretFieldEvents(fieldsContainer);
@@ -1923,27 +1964,34 @@ function submitAddChannel() {
         }
     });
 
+    // Get instance name if provided
+    const instanceInput = document.getElementById('add-channel-instance-input');
+    const instanceName = instanceInput ? instanceInput.value.trim() : '';
+
+    // Check if this channel type + instance_name combination already exists
+    const fullName = instanceName ? `${chName}:${instanceName}` : chName;
+    const exists = activeInstancesData.some(inst => inst.name === fullName);
+    if (exists) {
+        alert(currentLang === 'zh'
+            ? `通道 "${fullName}" 已存在，请使用其他实例名称或先删除现有实例`
+            : `Channel "${fullName}" already exists. Please use a different instance name or remove the existing one first.`);
+        if (instanceInput) instanceInput.focus();
+        return;
+    }
+
     const btn = document.getElementById('add-channel-submit');
     if (btn) { btn.disabled = true; btn.textContent = t('channels_connecting'); }
 
     fetch('/api/channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'connect', channel: chName, config: updates })
+        body: JSON.stringify({ action: 'connect', channel: chName, instance_name: instanceName, config: updates })
     })
     .then(r => r.json())
     .then(data => {
         if (data.status === 'success') {
-            const ch = channelsData.find(c => c.name === chName);
-            if (ch) {
-                ch.active = true;
-                (ch.fields || []).forEach(f => {
-                    if (updates[f.key] !== undefined) {
-                        f.value = f.type === 'secret' ? ChannelsHandler_maskSecret(updates[f.key]) : updates[f.key];
-                    }
-                });
-            }
-            renderActiveChannels();
+            closeAddChannelPanel();
+            loadChannelsView();
         } else {
             if (btn) { btn.disabled = false; btn.textContent = t('channels_connect_btn'); }
         }
@@ -1958,6 +2006,7 @@ function submitAddChannel() {
 // =====================================================================
 let _weixinQrPollTimer = null;
 let _weixinStatusPollTimer = null;
+let _pendingWeixinInstanceName = '';  // Track instance name when adding weixin via QR
 
 function stopWeixinStatusPoll() {
     if (_weixinStatusPollTimer) {
@@ -2003,11 +2052,36 @@ function stopWeixinQrPoll() {
     }
 }
 
+function startWeixinQrForInstance() {
+    const instanceInput = document.getElementById('add-channel-instance-input');
+    const instanceName = instanceInput ? instanceInput.value.trim() : '';
+
+    console.log('[Weixin] startWeixinQrForInstance called, instanceName=', instanceName);
+
+    // Check if instance already exists before starting QR
+    const fullName = instanceName ? 'weixin:' + instanceName : 'weixin';
+    const exists = activeInstancesData.some(inst => inst.name === fullName);
+    if (exists) {
+        alert(currentLang === 'zh'
+            ? `通道 "${fullName}" 已存在，请使用其他实例名称`
+            : `Channel "${fullName}" already exists. Please use a different instance name.`);
+        return;
+    }
+
+    _pendingWeixinInstanceName = instanceName;
+    console.log('[Weixin] _pendingWeixinInstanceName set to:', _pendingWeixinInstanceName);
+    startWeixinQrLogin();
+}
+
 function startWeixinQrLogin() {
     stopWeixinQrPoll();
-    fetch('/api/weixin/qrlogin')
+    const instanceName = _pendingWeixinInstanceName || '';
+    const qrUrl = '/api/weixin/qrlogin' + (instanceName ? '?instance_name=' + encodeURIComponent(instanceName) : '');
+    console.log('[Weixin] startWeixinQrLogin: fetching', qrUrl);
+    fetch(qrUrl)
         .then(r => r.json())
         .then(data => {
+            console.log('[Weixin] startWeixinQrLogin: got data', data);
             const panel = document.getElementById('weixin-qr-panel');
             if (!panel) return;
             if (data.status !== 'success') {
@@ -2021,15 +2095,19 @@ function startWeixinQrLogin() {
                 pollWeixinQrStatus();
             }
         })
-        .catch(() => {
+        .catch((err) => {
+            console.error('[Weixin] startWeixinQrLogin error:', err);
             const panel = document.getElementById('weixin-qr-panel');
-            if (panel) panel.innerHTML = `<p class="text-sm text-red-500">${t('weixin_scan_fail')}</p>`;
+            if (panel) panel.innerHTML = `<p class="text-sm text-red-500">${t('weixin_scan_fail')}: ${err}</p>`;
         });
 }
 
 function renderWeixinQr(qrcodeUrl, status) {
     const panel = document.getElementById('weixin-qr-panel');
     if (!panel) return;
+
+    // Remove hidden class to show the panel
+    panel.classList.remove('hidden');
 
     let statusText = t('weixin_scan_waiting');
     let statusColor = 'text-slate-500 dark:text-slate-400';
@@ -2069,12 +2147,29 @@ function pollWeixinQrStatus() {
             if (!panel) { stopWeixinQrPoll(); return; }
 
             if (data.status !== 'success') {
+                // If it's a conflict error, stop polling and show error
+                if (data.qr_status === 'conflict') {
+                    stopWeixinQrPoll();
+                    const panel = document.getElementById('weixin-qr-panel');
+                    if (panel) {
+                        panel.innerHTML = `
+                            <div class="flex flex-col items-center py-4">
+                                <div class="w-12 h-12 rounded-full bg-red-50 dark:bg-red-900/30 flex items-center justify-center mb-3">
+                                    <i class="fas fa-exclamation-triangle text-red-500 text-lg"></i>
+                                </div>
+                                <p class="text-sm font-medium text-red-600 dark:text-red-400">${currentLang === 'zh' ? '账号冲突' : 'Account Conflict'}</p>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-2 text-center px-4">${data.message || (currentLang === 'zh' ? '该账号已被其他实例使用' : 'This account is already used by another instance')}</p>
+                            </div>`;
+                    }
+                    return;
+                }
                 pollWeixinQrStatus();
                 return;
             }
 
             const qrStatus = data.qr_status;
             if (qrStatus === 'confirmed') {
+                stopWeixinQrPoll();  // Stop polling after confirmation
                 renderWeixinQr('', 'confirmed');
                 panel.innerHTML = `
                     <div class="flex flex-col items-center py-4">
@@ -2103,20 +2198,47 @@ function pollWeixinQrStatus() {
 }
 
 function connectWeixinAfterQr() {
+    const instanceName = _pendingWeixinInstanceName || '';
+    console.log('[Weixin] connectWeixinAfterQr called, instance_name=', instanceName);
+
+    // Prevent duplicate calls
+    if (connectWeixinAfterQr._inProgress) {
+        console.log('[Weixin] connectWeixinAfterQr: already in progress, ignoring');
+        return;
+    }
+    connectWeixinAfterQr._inProgress = true;
+
     fetch('/api/channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'connect', channel: 'weixin', config: {} })
+        body: JSON.stringify({ action: 'connect', channel: 'weixin', instance_name: instanceName, config: {} })
     })
     .then(r => r.json())
     .then(data => {
+        console.log('[Weixin] connectWeixinAfterQr response:', data);
         if (data.status === 'success') {
-            const ch = channelsData.find(c => c.name === 'weixin');
-            if (ch) ch.active = true;
-            setTimeout(() => renderActiveChannels(), 1500);
+            closeAddChannelPanel();
+            loadChannelsView();
+        } else {
+            // Show error in the QR panel
+            const panel = document.getElementById('weixin-qr-panel');
+            if (panel) {
+                panel.innerHTML = `
+                    <div class="flex flex-col items-center py-4">
+                        <div class="w-12 h-12 rounded-full bg-red-50 dark:bg-red-900/30 flex items-center justify-center mb-3">
+                            <i class="fas fa-exclamation-triangle text-red-500 text-lg"></i>
+                        </div>
+                        <p class="text-sm font-medium text-red-600 dark:text-red-400">${currentLang === 'zh' ? '连接失败' : 'Connection Failed'}</p>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-2 text-center px-4">${data.message || (currentLang === 'zh' ? '请重试' : 'Please try again')}</p>
+                    </div>`;
+            }
         }
+        connectWeixinAfterQr._inProgress = false;
     })
-    .catch(() => {});
+    .catch((err) => {
+        console.error('[Weixin] connectWeixinAfterQr error:', err);
+        connectWeixinAfterQr._inProgress = false;
+    });
 }
 
 // =====================================================================

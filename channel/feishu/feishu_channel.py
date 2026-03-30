@@ -57,12 +57,7 @@ def _ensure_lark_imported():
 
 @singleton
 class FeiShuChanel(ChatChannel):
-    feishu_app_id = conf().get('feishu_app_id')
-    feishu_app_secret = conf().get('feishu_app_secret')
-    feishu_token = conf().get('feishu_token')
-    feishu_event_mode = conf().get('feishu_event_mode', 'websocket')  # webhook 或 websocket
-
-    def __init__(self):
+    def __init__(self, _instance_name=""):
         super().__init__()
         # 历史消息id暂存，用于幂等控制
         self.receivedMsgs = ExpiredDict(60 * 60 * 7.1)
@@ -70,6 +65,8 @@ class FeiShuChanel(ChatChannel):
         self._ws_client = None
         self._ws_thread = None
         self._bot_open_id = None  # cached bot open_id for @-mention matching
+        self._instance_name = _instance_name
+        self._fetch_config()
         logger.debug("[FeiShu] app_id={}, app_secret={}, verification_token={}, event_mode={}".format(
             self.feishu_app_id, self.feishu_app_secret, self.feishu_token, self.feishu_event_mode))
         # 无需群校验和前缀
@@ -81,11 +78,30 @@ class FeiShuChanel(ChatChannel):
             logger.error("[FeiShu] websocket mode requires lark_oapi. Please install: pip install lark-oapi")
             raise Exception("lark_oapi not installed")
 
+    def _fetch_config(self):
+        """Fetch configuration for this instance."""
+        channel_type, instance_name = self._parse_channel_name()
+        config = self._get_instance_config(channel_type, instance_name)
+        self.feishu_app_id = config.get('feishu_app_id')
+        self.feishu_app_secret = config.get('feishu_app_secret')
+        self.feishu_token = config.get('feishu_token')
+        self.feishu_event_mode = config.get('feishu_event_mode', 'websocket')
+
+    def _parse_channel_name(self):
+        """Parse channel name into (channel_type, instance_name)."""
+        channel_name = getattr(self, 'channel_type', 'feishu')
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
+
+    def _get_instance_config(self, channel_type, instance_name):
+        """Get configuration for this specific instance."""
+        from channel.utils import get_channel_instance_config
+        return get_channel_instance_config(channel_type, instance_name, conf())
+
     def startup(self):
-        self.feishu_app_id = conf().get('feishu_app_id')
-        self.feishu_app_secret = conf().get('feishu_app_secret')
-        self.feishu_token = conf().get('feishu_token')
-        self.feishu_event_mode = conf().get('feishu_event_mode', 'websocket')
+        self._fetch_config()
         self._fetch_bot_open_id()
         if self.feishu_event_mode == 'websocket':
             self._startup_websocket()

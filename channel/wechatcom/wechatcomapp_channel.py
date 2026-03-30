@@ -29,19 +29,39 @@ MAX_UTF8_LEN = 2048
 class WechatComAppChannel(ChatChannel):
     NOT_SUPPORT_REPLYTYPE = []
 
-    def __init__(self):
+    def __init__(self, _instance_name=""):
         super().__init__()
-        self.corp_id = conf().get("wechatcom_corp_id")
-        self.secret = conf().get("wechatcomapp_secret")
-        self.agent_id = conf().get("wechatcomapp_agent_id")
-        self.token = conf().get("wechatcomapp_token")
-        self.aes_key = conf().get("wechatcomapp_aes_key")
+        self._instance_name = _instance_name
+        self._fetch_config()
         self._http_server = None
         logger.info(
             "[wechatcom] Initializing WeCom app channel, corp_id: {}, agent_id: {}".format(self.corp_id, self.agent_id)
         )
         self.crypto = WeChatCrypto(self.token, self.aes_key, self.corp_id)
         self.client = WechatComAppClient(self.corp_id, self.secret)
+
+    def _fetch_config(self):
+        """Fetch configuration for this instance."""
+        channel_type, instance_name = self._parse_channel_name()
+        config = self._get_instance_config(channel_type, instance_name)
+        self.corp_id = config.get("wechatcom_corp_id")
+        self.secret = config.get("wechatcomapp_secret")
+        self.agent_id = config.get("wechatcomapp_agent_id")
+        self.token = config.get("wechatcomapp_token")
+        self.aes_key = config.get("wechatcomapp_aes_key")
+
+    def _parse_channel_name(self):
+        """Parse channel name into (channel_type, instance_name)."""
+        channel_name = getattr(self, 'channel_type', 'wechatcom_app')
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
+
+    def _get_instance_config(self, channel_type, instance_name):
+        """Get configuration for this specific instance."""
+        from channel.utils import get_channel_instance_config
+        return get_channel_instance_config(channel_type, instance_name, conf())
 
     def startup(self):
         # start message listener

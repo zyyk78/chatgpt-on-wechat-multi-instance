@@ -60,13 +60,14 @@ class WebChannel(ChatChannel):
     #         cls._instance = super(WebChannel, cls).__new__(cls)
     #     return cls._instance
 
-    def __init__(self):
+    def __init__(self, _instance_name=""):
         super().__init__()
         self.msg_id_counter = 0
         self.session_queues = {}  # session_id -> Queue (fallback polling)
         self.request_to_session = {}  # request_id -> session_id
         self.sse_queues = {}  # request_id -> Queue (SSE streaming)
         self._http_server = None
+        self._instance_name = _instance_name
 
     def _generate_msg_id(self):
         """生成唯一的消息ID"""
@@ -760,13 +761,15 @@ class ChannelsHandler:
     ])
 
     @staticmethod
-    def _get_weixin_login_status() -> str:
+    def _get_weixin_login_status(instance_name: str = "") -> str:
+        """Get Weixin login status for a specific instance."""
         try:
             import sys
             app_module = sys.modules.get('__main__') or sys.modules.get('app')
             mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
             if mgr:
-                ch = mgr.get_channel("weixin")
+                ch_name = f"weixin:{instance_name}" if instance_name else "weixin"
+                ch = mgr.get_channel(ch_name)
                 if ch and hasattr(ch, 'login_status'):
                     return ch.login_status
         except Exception:
@@ -796,6 +799,14 @@ class ChannelsHandler:
         try:
             local_config = conf()
             active_channels = self._active_channel_set()
+            # Build set of base channel types that have at least one active instance
+            active_base_types = set()
+            for ch in active_channels:
+                if ':' in ch:
+                    active_base_types.add(ch.split(':')[0])
+                else:
+                    active_base_types.add(ch)
+
             channels = []
             for ch_name, ch_def in self.CHANNEL_DEFS.items():
                 fields_out = []
@@ -817,13 +828,39 @@ class ChannelsHandler:
                     "label": ch_def["label"],
                     "icon": ch_def["icon"],
                     "color": ch_def["color"],
-                    "active": ch_name in active_channels,
+                    "active": ch_name in active_base_types,  # Base type has at least one instance
                     "fields": fields_out,
                 }
-                if ch_name == "weixin" and ch_name in active_channels:
+                if ch_name == "weixin" and ch_name in active_base_types:
                     ch_info["login_status"] = self._get_weixin_login_status()
                 channels.append(ch_info)
-            return json.dumps({"status": "success", "channels": channels}, ensure_ascii=False)
+
+            # Also return list of all active instances for multi-instance support
+            active_instances = []
+            for full_name in active_channels:
+                if ':' in full_name:
+                    base_type, instance = full_name.split(':', 1)
+                    inst_info = {
+                        "name": full_name,
+                        "type": base_type,
+                        "instance_name": instance
+                    }
+                    # For Weixin, add login_status for each instance
+                    if base_type == "weixin":
+                        inst_info["login_status"] = self._get_weixin_login_status(instance)
+                    active_instances.append(inst_info)
+                else:
+                    active_instances.append({
+                        "name": full_name,
+                        "type": full_name,
+                        "instance_name": ""
+                    })
+
+            return json.dumps({
+                "status": "success",
+                "channels": channels,
+                "active_instances": active_instances
+            }, ensure_ascii=False)
         except Exception as e:
             logger.error(f"[WebChannel] Channels API error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
@@ -834,6 +871,7 @@ class ChannelsHandler:
             body = json.loads(web.data())
             action = body.get("action")
             channel_name = body.get("channel")
+            instance_name = body.get("instance_name", "")  # Optional instance name for multi-instance support
 
             if not action or not channel_name:
                 return json.dumps({"status": "error", "message": "action and channel required"})
@@ -844,9 +882,9 @@ class ChannelsHandler:
             if action == "save":
                 return self._handle_save(channel_name, body.get("config", {}))
             elif action == "connect":
-                return self._handle_connect(channel_name, body.get("config", {}))
+                return self._handle_connect(channel_name, body.get("config", {}), instance_name)
             elif action == "disconnect":
-                return self._handle_disconnect(channel_name)
+                return self._handle_disconnect(channel_name, instance_name)
             else:
                 return json.dumps({"status": "error", "message": f"unknown action: {action}"})
         except Exception as e:
@@ -915,8 +953,12 @@ class ChannelsHandler:
             "restarted": should_restart,
         }, ensure_ascii=False)
 
-    def _handle_connect(self, channel_name: str, updates: dict):
-        """Save config fields, add channel to channel_type, and start it."""
+    def _handle_connect(self, channel_name: str, updates: dict, instance_name: str = ""):
+        """Save config fields, add channel to channel_type, and start it.
+
+        Supports multi-instance via instance_name parameter.
+        If instance_name is provided, the channel will be named 'channel_name:instance_name'.
+        """
         ch_def = self.CHANNEL_DEFS[channel_name]
         valid_keys = {f["key"] for f in ch_def["fields"]}
         secret_keys = {f["key"] for f in ch_def["fields"] if f["type"] == "secret"}
@@ -943,9 +985,31 @@ class ChannelsHandler:
             local_config[key] = value
             applied[key] = value
 
+        # Build full channel name with instance suffix
+        full_channel_name = f"{channel_name}:{instance_name}" if instance_name else channel_name
+
+        logger.info(f"[WebChannel] _handle_connect: channel={channel_name}, instance='{instance_name}', full_name={full_channel_name}")
+
+        # Check if this channel instance already exists (in config or running)
         existing = self._parse_channel_list(conf().get("channel_type", ""))
-        if channel_name not in existing:
-            existing.append(channel_name)
+        logger.info(f"[WebChannel] _handle_connect: existing channel_type list = {existing}, full_channel_name in existing = {full_channel_name in existing}")
+        if full_channel_name in existing:
+            logger.warning(f"[WebChannel] Channel instance '{full_channel_name}' already exists in config")
+            return json.dumps({"status": "error", "message": f"Channel '{full_channel_name}' already exists. Please use a different instance name or remove the existing one first."})
+
+        # Also check if it's currently running
+        try:
+            import sys
+            app_module = sys.modules.get('__main__') or sys.modules.get('app')
+            mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
+            if mgr and mgr.get_channel(full_channel_name):
+                logger.warning(f"[WebChannel] Channel instance '{full_channel_name}' is already running")
+                return json.dumps({"status": "error", "message": f"Channel '{full_channel_name}' is already running. Please disconnect it first."})
+        except Exception:
+            pass
+
+        if full_channel_name not in existing:
+            existing.append(full_channel_name)
         new_channel_type = ",".join(existing)
         local_config["channel_type"] = new_channel_type
 
@@ -956,12 +1020,33 @@ class ChannelsHandler:
                 file_cfg = json.load(f)
         else:
             file_cfg = {}
+
+        # Handle multi-instance config: save to channel_instances list
+        if instance_name:
+            channel_instances = file_cfg.get("channel_instances", [])
+            if not isinstance(channel_instances, list):
+                channel_instances = []
+            # Find existing instance with same name
+            inst_found = False
+            for inst in channel_instances:
+                if inst.get("name") == full_channel_name:
+                    inst.update(applied)
+                    inst_found = True
+                    break
+            if not inst_found:
+                channel_instances.append({
+                    "name": full_channel_name,
+                    "type": channel_name,
+                    **applied
+                })
+            file_cfg["channel_instances"] = channel_instances
+
         file_cfg.update(applied)
         file_cfg["channel_type"] = new_channel_type
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(file_cfg, f, indent=4, ensure_ascii=False)
 
-        logger.info(f"[WebChannel] Channel '{channel_name}' connecting, channel_type={new_channel_type}")
+        logger.info(f"[WebChannel] Channel '{full_channel_name}' connecting, channel_type={new_channel_type}")
 
         def _do_start():
             try:
@@ -970,24 +1055,24 @@ class ChannelsHandler:
                 clear_fn = getattr(app_module, '_clear_singleton_cache', None) if app_module else None
                 mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
                 if mgr is None:
-                    logger.warning(f"[WebChannel] ChannelManager not available, cannot start '{channel_name}'")
+                    logger.warning(f"[WebChannel] ChannelManager not available, cannot start '{full_channel_name}'")
                     return
                 # Stop existing instance first if still running (e.g. re-connect without disconnect)
-                existing_ch = mgr.get_channel(channel_name)
+                existing_ch = mgr.get_channel(full_channel_name)
                 if existing_ch is not None:
-                    logger.info(f"[WebChannel] Stopping existing '{channel_name}' before reconnect...")
-                    mgr.stop(channel_name)
+                    logger.info(f"[WebChannel] Stopping existing '{full_channel_name}' before reconnect...")
+                    mgr.stop(full_channel_name)
                 # Always wait for the remote service to release the old connection before
                 # establishing a new one (DingTalk drops callbacks on duplicate connections)
-                logger.info(f"[WebChannel] Waiting for '{channel_name}' old connection to close...")
+                logger.info(f"[WebChannel] Waiting for '{full_channel_name}' old connection to close...")
                 time.sleep(5)
                 if clear_fn:
-                    clear_fn(channel_name)
-                logger.info(f"[WebChannel] Starting channel '{channel_name}'...")
-                mgr.start([channel_name], first_start=False)
-                logger.info(f"[WebChannel] Channel '{channel_name}' start completed")
+                    clear_fn(full_channel_name)
+                logger.info(f"[WebChannel] Starting channel '{full_channel_name}'...")
+                mgr.start([full_channel_name], first_start=False)
+                logger.info(f"[WebChannel] Channel '{full_channel_name}' start completed")
             except Exception as e:
-                logger.error(f"[WebChannel] Failed to start channel '{channel_name}': {e}",
+                logger.error(f"[WebChannel] Failed to start channel '{full_channel_name}': {e}",
                              exc_info=True)
 
         threading.Thread(target=_do_start, daemon=True).start()
@@ -995,11 +1080,16 @@ class ChannelsHandler:
         return json.dumps({
             "status": "success",
             "channel_type": new_channel_type,
+            "full_channel_name": full_channel_name,
         }, ensure_ascii=False)
 
-    def _handle_disconnect(self, channel_name: str):
+    def _handle_disconnect(self, channel_name: str, instance_name: str = ""):
+        """Disconnect a channel. Supports multi-instance via instance_name parameter."""
+        # Build full channel name with instance suffix
+        full_channel_name = f"{channel_name}:{instance_name}" if instance_name else channel_name
+
         existing = self._parse_channel_list(conf().get("channel_type", ""))
-        existing = [ch for ch in existing if ch != channel_name]
+        existing = [ch for ch in existing if ch != full_channel_name]
         new_channel_type = ",".join(existing)
 
         local_config = conf()
@@ -1013,6 +1103,23 @@ class ChannelsHandler:
         else:
             file_cfg = {}
         file_cfg["channel_type"] = new_channel_type
+
+        # Remove from channel_instances if present
+        if instance_name:
+            channel_instances = file_cfg.get("channel_instances", [])
+            if isinstance(channel_instances, list):
+                channel_instances = [inst for inst in channel_instances if inst.get("name") != full_channel_name]
+                file_cfg["channel_instances"] = channel_instances
+
+        # Remove credentials for Weixin channels
+        if channel_name == "weixin" and instance_name:
+            try:
+                from channel.weixin.weixin_channel import _remove_credentials
+                _remove_credentials(instance_name)
+                logger.info(f"[WebChannel] Removed credentials for '{full_channel_name}'")
+            except Exception as e:
+                logger.warning(f"[WebChannel] Failed to remove credentials for '{full_channel_name}': {e}")
+
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(file_cfg, f, indent=4, ensure_ascii=False)
 
@@ -1023,12 +1130,12 @@ class ChannelsHandler:
                 mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
                 clear_fn = getattr(app_module, '_clear_singleton_cache', None) if app_module else None
                 if mgr:
-                    mgr.stop(channel_name)
+                    mgr.stop(full_channel_name)
                 else:
-                    logger.warning(f"[WebChannel] ChannelManager not found, cannot stop '{channel_name}'")
+                    logger.warning(f"[WebChannel] ChannelManager not found, cannot stop '{full_channel_name}'")
                 if clear_fn:
-                    clear_fn(channel_name)
-                logger.info(f"[WebChannel] Channel '{channel_name}' disconnected, "
+                    clear_fn(full_channel_name)
+                logger.info(f"[WebChannel] Channel '{full_channel_name}' disconnected, "
                             f"channel_type={new_channel_type}")
             except Exception as e:
                 logger.warning(f"[WebChannel] Failed to stop channel '{channel_name}': {e}",
@@ -1070,13 +1177,13 @@ class WeixinQrHandler:
             return ""
 
     @staticmethod
-    def _get_running_channel():
+    def _get_running_channel(channel_name="weixin"):
         try:
             import sys
             app_module = sys.modules.get('__main__') or sys.modules.get('app')
             mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
             if mgr:
-                return mgr.get_channel("weixin")
+                return mgr.get_channel(channel_name)
         except Exception:
             pass
         return None
@@ -1084,7 +1191,12 @@ class WeixinQrHandler:
     def GET(self):
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
-            running_ch = self._get_running_channel()
+            # Get instance_name from query params if provided
+            instance_name = web.input().get("instance_name", "")
+            # Build full channel name to check for running instance
+            full_ch_name = f"weixin:{instance_name}" if instance_name else "weixin"
+
+            running_ch = self._get_running_channel(full_ch_name)
             if running_ch and hasattr(running_ch, '_current_qr_url') and running_ch._current_qr_url:
                 qr_image = self._qr_to_data_uri(running_ch._current_qr_url)
                 return json.dumps({
@@ -1103,10 +1215,12 @@ class WeixinQrHandler:
             if not qrcode:
                 return json.dumps({"status": "error", "message": "No QR code returned"})
             qr_image = self._qr_to_data_uri(qrcode_url)
+            logger.info(f"[WebChannel] WeixinQr GET: received instance_name='{instance_name}', storing in _qr_state")
             WeixinQrHandler._qr_state = {
                 "qrcode": qrcode,
                 "qrcode_url": qrcode_url,
                 "base_url": base_url,
+                "instance_name": instance_name,
             }
             return json.dumps({"status": "success", "qrcode_url": qrcode_url, "qr_image": qr_image})
         except Exception as e:
@@ -1122,6 +1236,7 @@ class WeixinQrHandler:
             if action == "poll":
                 return self._poll_status()
             elif action == "refresh":
+                return self.GET()
                 return self.GET()
             else:
                 return json.dumps({"status": "error", "message": f"unknown action: {action}"})
@@ -1154,16 +1269,31 @@ class WeixinQrHandler:
             if not bot_token or not bot_id:
                 return json.dumps({"status": "error", "message": "Login confirmed but missing token"})
 
-            cred_path = os.path.expanduser(
-                conf().get("weixin_credentials_path", "~/.weixin_cow_credentials.json")
+            # Save credentials using the new per-instance format
+            from channel.weixin.weixin_channel import _save_credentials, GLOBAL_CREDENTIALS_PATH, check_credential_conflict
+            instance_name = state.get("instance_name", "")
+            logger.info(f"[WebChannel] QR confirmed: state instance_name='{instance_name}', _qr_state keys={list(state.keys())}")
+
+            # Check for credential conflicts before saving
+            has_conflict, conflict_inst, conflict_reason = check_credential_conflict(
+                new_token=bot_token, new_bot_id=bot_id, new_user_id=user_id, exclude_instance=instance_name
             )
-            from channel.weixin.weixin_channel import _save_credentials
-            _save_credentials(cred_path, {
+            if has_conflict:
+                logger.warning(f"[WebChannel] Credential conflict detected: {conflict_reason}")
+                WeixinQrHandler._qr_state = {}
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Credential conflict: {conflict_reason}. This account is already connected as '{conflict_inst}'.",
+                    "qr_status": "conflict",
+                })
+
+            _save_credentials(instance_name, {
                 "token": bot_token,
                 "base_url": result_base_url,
                 "bot_id": bot_id,
                 "user_id": user_id,
             })
+            # Also update conf for backward compatibility
             conf()["weixin_token"] = bot_token
             conf()["weixin_base_url"] = result_base_url
 

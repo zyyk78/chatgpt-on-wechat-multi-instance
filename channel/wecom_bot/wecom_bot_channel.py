@@ -37,7 +37,7 @@ MEDIA_CHUNK_SIZE = 512 * 1024  # 512KB per chunk (before base64 encoding)
 @singleton
 class WecomBotChannel(ChatChannel):
 
-    def __init__(self):
+    def __init__(self, _instance_name=""):
         super().__init__()
         self.bot_id = ""
         self.bot_secret = ""
@@ -50,17 +50,37 @@ class WecomBotChannel(ChatChannel):
         self._pending_responses = {}  # req_id -> (threading.Event, result_holder)
         self._pending_lock = threading.Lock()
         self._stream_states = {}  # req_id -> {"stream_id": str, "content": str}
+        self._instance_name = _instance_name
 
         conf()["group_name_white_list"] = ["ALL_GROUP"]
         conf()["single_chat_prefix"] = [""]
+
+    def _fetch_config(self):
+        """Fetch configuration for this instance."""
+        channel_type, instance_name = self._parse_channel_name()
+        config = self._get_instance_config(channel_type, instance_name)
+        self.bot_id = config.get("wecom_bot_id", "")
+        self.bot_secret = config.get("wecom_bot_secret", "")
+
+    def _parse_channel_name(self):
+        """Parse channel name into (channel_type, instance_name)."""
+        channel_name = getattr(self, 'channel_type', 'wecom_bot')
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
+
+    def _get_instance_config(self, channel_type, instance_name):
+        """Get configuration for this specific instance."""
+        from channel.utils import get_channel_instance_config
+        return get_channel_instance_config(channel_type, instance_name, conf())
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def startup(self):
-        self.bot_id = conf().get("wecom_bot_id", "")
-        self.bot_secret = conf().get("wecom_bot_secret", "")
+        self._fetch_config()
 
         if not self.bot_id or not self.bot_secret:
             err = "[WecomBot] wecom_bot_id and wecom_bot_secret are required"

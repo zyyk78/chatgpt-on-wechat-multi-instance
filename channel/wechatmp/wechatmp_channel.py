@@ -37,19 +37,13 @@ except ImportError as e:
 
 @singleton
 class WechatMPChannel(ChatChannel):
-    def __init__(self, passive_reply=True):
+    def __init__(self, passive_reply=True, _instance_name=""):
         super().__init__()
         self.passive_reply = passive_reply
         self.NOT_SUPPORT_REPLYTYPE = []
         self._http_server = None
-        appid = conf().get("wechatmp_app_id")
-        secret = conf().get("wechatmp_app_secret")
-        token = conf().get("wechatmp_token")
-        aes_key = conf().get("wechatmp_aes_key")
-        self.client = WechatMPClient(appid, secret)
-        self.crypto = None
-        if aes_key:
-            self.crypto = WeChatCrypto(token, aes_key, appid)
+        self._instance_name = _instance_name
+        self._fetch_config()
         if self.passive_reply:
             # Cache the reply to the user's first message
             self.cache_dict = defaultdict(list)
@@ -62,6 +56,32 @@ class WechatMPChannel(ChatChannel):
             t = threading.Thread(target=self.start_loop, args=(self.delete_media_loop,))
             t.setDaemon(True)
             t.start()
+
+    def _fetch_config(self):
+        """Fetch configuration for this instance."""
+        channel_type, instance_name = self._parse_channel_name()
+        config = self._get_instance_config(channel_type, instance_name)
+        appid = config.get("wechatmp_app_id")
+        secret = config.get("wechatmp_app_secret")
+        token = config.get("wechatmp_token")
+        aes_key = config.get("wechatmp_aes_key")
+        self.client = WechatMPClient(appid, secret)
+        self.crypto = None
+        if aes_key:
+            self.crypto = WeChatCrypto(token, aes_key, appid)
+
+    def _parse_channel_name(self):
+        """Parse channel name into (channel_type, instance_name)."""
+        channel_name = getattr(self, 'channel_type', 'wechatmp')
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
+
+    def _get_instance_config(self, channel_type, instance_name):
+        """Get configuration for this specific instance."""
+        from channel.utils import get_channel_instance_config
+        return get_channel_instance_config(channel_type, instance_name, conf())
 
     def startup(self):
         if self.passive_reply:

@@ -40,14 +40,26 @@ class ChannelManager:
     Manage the lifecycle of multiple channels running concurrently.
     Each channel.startup() runs in its own daemon thread.
     The web channel is started as default console unless explicitly disabled.
+
+    Storage structure:
+        _channels: {channel_type: {instance_name: channel_instance}}
+        _threads: {(channel_type, instance_name): thread}
     """
 
     def __init__(self):
-        self._channels = {}        # channel_name -> channel instance
-        self._threads = {}         # channel_name -> thread
+        self._channels = {}        # {channel_type: {instance_name: channel_instance}}
+        self._threads = {}         # {(channel_type, instance_name): thread}
         self._primary_channel = None
         self._lock = threading.Lock()
         self.cloud_mode = False    # set to True when cloud client is active
+
+    @staticmethod
+    def _parse_channel_name(channel_name: str):
+        """Parse channel name into (channel_type, instance_name)."""
+        if ':' in channel_name:
+            parts = channel_name.split(':', 1)
+            return parts[0], parts[1]
+        return channel_name, ""
 
     @property
     def channel(self):
@@ -55,7 +67,8 @@ class ChannelManager:
         return self._primary_channel
 
     def get_channel(self, channel_name: str):
-        return self._channels.get(channel_name)
+        channel_type, instance_name = self._parse_channel_name(channel_name)
+        return self._channels.get(channel_type, {}).get(instance_name)
 
     def start(self, channel_names: list, first_start: bool = False):
         """
@@ -67,9 +80,12 @@ class ChannelManager:
             for name in channel_names:
                 ch = channel_factory.create_channel(name)
                 ch.cloud_mode = self.cloud_mode
-                self._channels[name] = ch
+                channel_type, instance_name = self._parse_channel_name(name)
+                if channel_type not in self._channels:
+                    self._channels[channel_type] = {}
+                self._channels[channel_type][instance_name] = ch
                 channels.append((name, ch))
-                if self._primary_channel is None and name != "web":
+                if self._primary_channel is None and channel_type != "web":
                     self._primary_channel = ch
 
             if self._primary_channel is None and channels:
@@ -100,17 +116,19 @@ class ChannelManager:
             web_entry = None
             other_entries = []
             for entry in channels:
-                if entry[0] == "web":
+                entry_type, _ = self._parse_channel_name(entry[0])
+                if entry_type == "web":
                     web_entry = entry
                 else:
                     other_entries.append(entry)
 
             ordered = ([web_entry] if web_entry else []) + other_entries
             for i, (name, ch) in enumerate(ordered):
-                if i > 0 and name != "web":
+                entry_type, entry_instance = self._parse_channel_name(name)
+                if i > 0 and entry_type != "web":
                     time.sleep(0.1)
                 t = threading.Thread(target=self._run_channel, args=(name, ch), daemon=True)
-                self._threads[name] = t
+                self._threads[(entry_type, entry_instance)] = t
                 t.start()
                 logger.debug(f"[ChannelManager] Channel '{name}' started in sub-thread")
 
@@ -128,13 +146,25 @@ class ChannelManager:
         """
         # Pop under lock, then stop outside lock to avoid deadlock
         with self._lock:
-            names = [channel_name] if channel_name else list(self._channels.keys())
-            to_stop = []
-            for name in names:
-                ch = self._channels.pop(name, None)
-                th = self._threads.pop(name, None)
-                to_stop.append((name, ch, th))
-            if channel_name and self._primary_channel is self._channels.get(channel_name):
+            if channel_name:
+                # Stop specific channel
+                channel_type, instance_name = self._parse_channel_name(channel_name)
+                if channel_type in self._channels:
+                    ch = self._channels[channel_type].pop(instance_name, None)
+                    th = self._threads.pop((channel_type, instance_name), None)
+                    to_stop = [(channel_name, ch, th)]
+                    if self._primary_channel is ch:
+                        self._primary_channel = None
+                else:
+                    to_stop = []
+            else:
+                # Stop all channels
+                to_stop = []
+                for ch_type, instances in self._channels.items():
+                    for inst_name, ch in instances.items():
+                        th = self._threads.pop((ch_type, inst_name), None)
+                        to_stop.append((f"{ch_type}:{inst_name}" if inst_name else ch_type, ch, th))
+                self._channels.clear()
                 self._primary_channel = None
 
         for name, ch, th in to_stop:
@@ -197,10 +227,8 @@ class ChannelManager:
         Dynamically add and start a new channel.
         If the channel is already running, restart it instead.
         """
-        with self._lock:
-            if channel_name in self._channels:
-                logger.info(f"[ChannelManager] Channel '{channel_name}' already exists, restarting")
-        if self._channels.get(channel_name):
+        if self.get_channel(channel_name):
+            logger.info(f"[ChannelManager] Channel '{channel_name}' already exists, restarting")
             self.restart(channel_name)
             return
         logger.info(f"[ChannelManager] Adding channel '{channel_name}'...")
@@ -212,10 +240,9 @@ class ChannelManager:
         """
         Dynamically stop and remove a running channel.
         """
-        with self._lock:
-            if channel_name not in self._channels:
-                logger.warning(f"[ChannelManager] Channel '{channel_name}' not found, nothing to remove")
-                return
+        if not self.get_channel(channel_name):
+            logger.warning(f"[ChannelManager] Channel '{channel_name}' not found, nothing to remove")
+            return
         logger.info(f"[ChannelManager] Removing channel '{channel_name}'...")
         self.stop(channel_name)
         logger.info(f"[ChannelManager] Channel '{channel_name}' removed successfully")
@@ -225,7 +252,16 @@ def _clear_singleton_cache(channel_name: str):
     """
     Clear the singleton cache for the channel class so that
     a new instance can be created with updated config.
+
+    Supports both simple format ("weixin") and instance format ("weixin:instance1").
     """
+    # Parse channel name to get type and instance
+    if ':' in channel_name:
+        channel_type, instance_name = channel_name.split(':', 1)
+    else:
+        channel_type = channel_name
+        instance_name = ""
+
     cls_map = {
         "web": "channel.web.web_channel.WebChannel",
         "wechatmp": "channel.wechatmp.wechatmp_channel.WechatMPChannel",
@@ -238,7 +274,7 @@ def _clear_singleton_cache(channel_name: str):
         const.WEIXIN: "channel.weixin.weixin_channel.WeixinChannel",
         "wx": "channel.weixin.weixin_channel.WeixinChannel",
     }
-    module_path = cls_map.get(channel_name)
+    module_path = cls_map.get(channel_type)
     if not module_path:
         return
     try:
@@ -247,6 +283,18 @@ def _clear_singleton_cache(channel_name: str):
         import importlib
         module = importlib.import_module(module_name)
         wrapper = getattr(module, class_name, None)
+
+        # Use new _clear / _clear_all methods if available
+        if hasattr(wrapper, '_clear'):
+            if instance_name:
+                wrapper._clear(instance_name)
+                logger.debug(f"[ChannelManager] Cleared singleton cache for {class_name} (instance={instance_name})")
+            else:
+                wrapper._clear_all()
+                logger.debug(f"[ChannelManager] Cleared all singleton cache for {class_name}")
+            return
+
+        # Fallback to old method for backward compatibility
         if wrapper and hasattr(wrapper, '__closure__') and wrapper.__closure__:
             for cell in wrapper.__closure__:
                 try:
