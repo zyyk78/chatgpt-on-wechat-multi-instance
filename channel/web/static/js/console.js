@@ -1924,6 +1924,9 @@ function onAddChannelSelect(chName) {
         // For weixin, show instance name input and a button to start QR login
         if (instanceNameContainer) instanceNameContainer.classList.remove('hidden');
         actions.classList.add('hidden');
+        // Panel is always created with id 'weixin-qr-panel' (without instance suffix)
+        // because this function is called before user types instance name
+        // renderWeixinQr will try both 'weixin-qr-panel-{instance}' and 'weixin-qr-panel'
         fieldsContainer.innerHTML = `
             <div class="flex flex-col items-center py-4">
                 <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${currentLang === 'zh' ? '请输入实例名称，然后点击下方按钮开始扫码' : 'Enter instance name, then click the button below to start QR login'}</p>
@@ -2086,8 +2089,8 @@ function startWeixinQrLogin() {
         .then(data => {
             console.log('[Weixin] startWeixinQrLogin: got data', data);
             const instName = _pendingWeixinInstanceName || '';
-            const panelId = instName ? 'weixin-qr-panel-' + instName : 'weixin-qr-panel';
-            const panel = document.getElementById(panelId);
+            let panel = instName ? document.getElementById('weixin-qr-panel-' + instName) : null;
+            if (!panel) panel = document.getElementById('weixin-qr-panel');
             if (!panel) return;
             if (data.status !== 'success') {
                 panel.innerHTML = `<p class="text-sm text-red-500">${t('weixin_scan_fail')}: ${data.message || ''}</p>`;
@@ -2103,16 +2106,17 @@ function startWeixinQrLogin() {
         .catch((err) => {
             console.error('[Weixin] startWeixinQrLogin error:', err);
             const instName = _pendingWeixinInstanceName || '';
-            const panelId = instName ? 'weixin-qr-panel-' + instName : 'weixin-qr-panel';
-            const panel = document.getElementById(panelId);
+            let panel = instName ? document.getElementById('weixin-qr-panel-' + instName) : null;
+            if (!panel) panel = document.getElementById('weixin-qr-panel');
             if (panel) panel.innerHTML = `<p class="text-sm text-red-500">${t('weixin_scan_fail')}: ${err}</p>`;
         });
 }
 
 function renderWeixinQr(qrcodeUrl, status) {
     const instName = _pendingWeixinInstanceName || '';
-    const panelId = instName ? 'weixin-qr-panel-' + instName : 'weixin-qr-panel';
-    const panel = document.getElementById(panelId);
+    // Try both panel IDs: with instance name suffix and without
+    let panel = instName ? document.getElementById('weixin-qr-panel-' + instName) : null;
+    if (!panel) panel = document.getElementById('weixin-qr-panel');
     if (!panel) return;
 
     // Remove hidden class to show the panel
@@ -2153,8 +2157,8 @@ function pollWeixinQrStatus() {
         .then(r => r.json())
         .then(data => {
             const instName = _pendingWeixinInstanceName || '';
-            const panelId = instName ? 'weixin-qr-panel-' + instName : 'weixin-qr-panel';
-            const panel = document.getElementById(panelId);
+            let panel = instName ? document.getElementById('weixin-qr-panel-' + instName) : null;
+            if (!panel) panel = document.getElementById('weixin-qr-panel');
             if (!panel) { stopWeixinQrPoll(); return; }
 
             if (data.status !== 'success') {
@@ -2232,8 +2236,8 @@ function connectWeixinAfterQr() {
         } else {
             // Show error in the QR panel
             const instName = _pendingWeixinInstanceName || '';
-            const panelId = instName ? 'weixin-qr-panel-' + instName : 'weixin-qr-panel';
-            const panel = document.getElementById(panelId);
+            let panel = instName ? document.getElementById('weixin-qr-panel-' + instName) : null;
+            if (!panel) panel = document.getElementById('weixin-qr-panel');
             if (panel) {
                 panel.innerHTML = `
                     <div class="flex flex-col items-center py-4">
