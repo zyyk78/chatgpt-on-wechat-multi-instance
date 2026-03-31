@@ -182,8 +182,6 @@ class ChatChannel(Channel):
         # reply的构建步骤
         reply = self._generate_reply(context)
 
-        logger.debug("[chat_channel] decorating reply: {}".format(reply))
-
         # reply的包装步骤
         if reply and reply.content:
             reply = self._decorate_reply(context, reply)
@@ -294,7 +292,6 @@ class ChatChannel(Channel):
             )
             reply = e_context["reply"]
             if not e_context.is_pass() and reply and reply.type:
-                logger.debug("[chat_channel] sending reply: {}, context: {}".format(reply, context))
                 
                 # 如果是文本回复，尝试提取并发送图片
                 if reply.type == ReplyType.TEXT:
