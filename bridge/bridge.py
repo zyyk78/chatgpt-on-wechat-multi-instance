@@ -78,6 +78,8 @@ class Bridge(object):
                 if not conf().get("text_to_voice") or conf().get("text_to_voice") in ["openai", const.TTS_1, const.TTS_1_HD]:
                     self.btype["text_to_voice"] = const.LINKAI
 
+        logger.info(f"[Bridge] Selected bot_type for chat: {self.btype['chat']}")
+
         self.bots = {}
         self.chat_bots = {}
         self._agent_bridge = None

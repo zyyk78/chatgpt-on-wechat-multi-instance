@@ -105,13 +105,21 @@ class OpenAICompatibleBot:
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
-            
+
+            # Get show_thinking preference
+            show_thinking = kwargs.get("show_thinking", False)
+
+            # Add reasoning_split=True for MiniMax models (always add, to separate thinking from content)
+            model_name = request_params.get("model", "")
+            if isinstance(model_name, str) and model_name.lower().startswith("minimax"):
+                request_params["extra_body"] = {"reasoning_split": True}
+
             # Make API call with proper configuration
             api_key = api_config.get('api_key')
             api_base = api_config.get('api_base')
-            
+
             if stream:
-                return self._handle_stream_response(request_params, api_key, api_base)
+                return self._handle_stream_response(request_params, api_key, api_base, show_thinking)
             else:
                 return self._handle_sync_response(request_params, api_key, api_base)
                 
@@ -154,7 +162,7 @@ class OpenAICompatibleBot:
                 "status_code": 500
             }
     
-    def _handle_stream_response(self, request_params, api_key, api_base):
+    def _handle_stream_response(self, request_params, api_key, api_base, show_thinking=False):
         """Handle streaming OpenAI API response"""
         try:
             # Build kwargs with explicit API configuration
@@ -163,13 +171,46 @@ class OpenAICompatibleBot:
                 kwargs["api_key"] = api_key
             if api_base:
                 kwargs["api_base"] = api_base
-            
+
+            # Check if this is a MiniMax model (has reasoning_details support)
+            model_name = request_params.get("model", "")
+
             stream = openai.ChatCompletion.create(**kwargs)
-            
+
             # Stream chunks to caller
             for chunk in stream:
+                # Handle reasoning_details for MiniMax models
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                reasoning_details = delta.get("reasoning_details", [])
+
+                if reasoning_details:
+                    if show_thinking:
+                        # Yield reasoning as visible content
+                        for rd in reasoning_details:
+                            if rd.get("text"):
+                                yield {
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {
+                                            "role": "assistant",
+                                            "content": rd["text"]
+                                        }
+                                    }]
+                                }
+                    # else: silently discard reasoning_details
+
+                    # Remove reasoning_details from chunk to prevent duplicate handling
+                    delta = dict(delta)
+                    delta.pop("reasoning_details", None)
+                    chunk = {
+                        "choices": [{
+                            **chunk.get("choices", [{}])[0],
+                            "delta": delta
+                        }]
+                    }
+
                 yield chunk
-                
+
         except Exception as e:
             logger.error(f"[{self.__class__.__name__}] stream response error: {e}")
             yield {
