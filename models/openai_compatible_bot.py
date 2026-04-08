@@ -180,24 +180,29 @@ class OpenAICompatibleBot:
             # Stream chunks to caller
             for chunk in stream:
                 # Handle reasoning_details for MiniMax models
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                reasoning_details = delta.get("reasoning_details", [])
+                delta = chunk.choices[0].delta
+                reasoning_details = getattr(delta, "reasoning_details", [])
 
                 if reasoning_details:
-                    if show_thinking:
-                        # Yield reasoning as visible content
-                        for rd in reasoning_details:
-                            if rd.get("text"):
+                    logger.info(f"[{self.__class__.__name__}] thinking detected, show_thinking={show_thinking}")
+                    first_chunk = True  # Track if this is the first chunk for adding [thinking] tag
+                    for rd in reasoning_details:
+                        if rd.get("text"):
+                            content = rd["text"]
+                            if first_chunk:
+                                content = "[thinking] " + content
+                                first_chunk = False
+                            if show_thinking:
                                 yield {
                                     "choices": [{
                                         "index": 0,
                                         "delta": {
                                             "role": "assistant",
-                                            "content": rd["text"]
+                                            "content": content
                                         }
                                     }]
                                 }
-                    # else: silently discard reasoning_details
+                    # else: silently discard reasoning_details when show_thinking=False
 
                     # Remove reasoning_details from chunk to prevent duplicate handling
                     delta = dict(delta)

@@ -209,6 +209,10 @@ class AgentLLMModel(LLMModel):
                 if session_id:
                     kwargs['session_id'] = session_id
 
+                # Add show_thinking preference
+                from config import conf
+                kwargs['show_thinking'] = conf().get("show_thinking", False)
+
                 stream = self.bot.call_with_tools(**kwargs)
                 
                 # Convert stream format to our expected format

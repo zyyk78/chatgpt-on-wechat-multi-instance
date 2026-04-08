@@ -69,19 +69,23 @@ class AgentEventHandler:
     
     def _handle_message_end(self, data):
         """Handle message end event"""
+        from config import conf
+        show_thinking = conf().get("show_thinking", False)
+
         tool_calls = data.get("tool_calls", [])
-        
+
         # Only send thinking process if followed by tool calls
         if tool_calls:
             if self.current_thinking.strip():
                 logger.info(f"💭 {self.current_thinking.strip()[:200]}{'...' if len(self.current_thinking) > 200 else ''}")
-                # Send thinking process to channel
-                self._send_to_channel(f"{self.current_thinking.strip()}")
+                # Send thinking process to channel only if show_thinking is True
+                if show_thinking:
+                    self._send_to_channel(f"{self.current_thinking.strip()}")
         else:
             # No tool calls = final response (logged at agent_stream level)
             if self.current_thinking.strip():
                 logger.debug(f"💬 {self.current_thinking.strip()[:200]}{'...' if len(self.current_thinking) > 200 else ''}")
-        
+
         self.current_thinking = ""
     
     def _handle_tool_execution_start(self, data):
