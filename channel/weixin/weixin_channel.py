@@ -682,17 +682,22 @@ class WeixinChannel(ChatChannel):
             self._send_text("[Image send failed: file not found]", receiver, context_token)
             return
         try:
+            logger.debug(f"[Weixin] Uploading image to CDN: path={local_path}, receiver={receiver}")
             result = upload_media_to_cdn(self.api, local_path, receiver, media_type=1)
-            self.api.send_image_item(
+            logger.debug(f"[Weixin] CDN upload success, encrypt_query_param={result['encrypt_query_param'][:50]}..., raw_size={result['raw_size']}")
+
+            api_response = self.api.send_image_item(
                 to=receiver,
                 context_token=context_token,
                 encrypt_query_param=result["encrypt_query_param"],
                 aes_key_b64=result["aes_key_b64"],
                 ciphertext_size=result["ciphertext_size"],
+                raw_size=result["raw_size"],
             )
+            logger.debug(f"[Weixin] send_image_item response: {api_response}")
             logger.info(f"[Weixin] Image sent to {receiver}")
         except Exception as e:
-            logger.error(f"[Weixin] Image send failed: {e}")
+            logger.error(f"[Weixin] Image send failed: {e}", exc_info=True)
             self._send_text("[Image send failed]", receiver, context_token)
 
     def _send_file(self, file_path_or_url: str, receiver: str, context_token: str):

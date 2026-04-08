@@ -99,7 +99,7 @@ class WeixinApi:
 
     def send_image_item(self, to: str, context_token: str,
                         encrypt_query_param: str, aes_key_b64: str,
-                        ciphertext_size: int, text: str = "") -> dict:
+                        ciphertext_size: int, raw_size: int = 0, text: str = "") -> dict:
         items = []
         if text:
             items.append({"type": 1, "text_item": {"text": text}})
@@ -111,7 +111,7 @@ class WeixinApi:
                     "aes_key": aes_key_b64,
                     "encrypt_type": 1,
                 },
-                "mid_size": ciphertext_size,
+                "size": raw_size if raw_size else ciphertext_size,
             }
         })
         return self._send_items(to, context_token, items)
@@ -156,17 +156,17 @@ class WeixinApi:
         return self._send_items(to, context_token, items)
 
     def _send_items(self, to: str, context_token: str, items: list) -> dict:
-        return self._post("ilink/bot/sendmessage", {
-            "msg": {
-                "from_user_id": "",
-                "to_user_id": to,
-                "client_id": uuid.uuid4().hex[:16],
-                "message_type": 2,
-                "message_state": 2,
-                "item_list": items,
-                "context_token": context_token,
-            }
-        })
+        msg = {
+            "from_user_id": "",
+            "to_user_id": to,
+            "client_id": uuid.uuid4().hex[:16],
+            "message_type": 2,
+            "message_state": 2,
+            "item_list": items,
+            "context_token": context_token,
+        }
+        logger.debug(f"[Weixin] _send_items to={to}, items count={len(items)}")
+        return self._post("ilink/bot/sendmessage", {"msg": msg})
 
     # ── getUploadUrl ───────────────────────────────────────────────────
 
@@ -294,6 +294,7 @@ def upload_media_to_cdn(api: WeixinApi, file_path: str, to_user_id: str,
         try:
             if attempt > 1:
                 filekey = uuid.uuid4().hex
+            logger.debug(f"[Weixin] CDN upload attempt {attempt}: filekey={filekey}, raw_size={raw_size}, cipher_size={cipher_size}")
             resp = api.get_upload_url(
                 filekey=filekey,
                 media_type=media_type,
@@ -303,13 +304,24 @@ def upload_media_to_cdn(api: WeixinApi, file_path: str, to_user_id: str,
                 filesize=cipher_size,
                 aeskey=aes_key_hex,
             )
-            upload_param = resp.get("upload_param", "")
-            if not upload_param:
-                raise RuntimeError(f"[Weixin] getUploadUrl returned no upload_param: {resp}")
+            logger.debug(f"[Weixin] get_upload_url response: {resp}")
 
-            cdn_url = (f"{api.cdn_base_url}/upload"
-                       f"?encrypted_query_param={quote(upload_param)}"
-                       f"&filekey={quote(filekey)}")
+            # Check for upload_full_url (new protocol) or upload_param (old protocol)
+            upload_full_url = resp.get("upload_full_url", "")
+            upload_param = resp.get("upload_param", "")
+
+            if upload_full_url:
+                # New protocol: use the full URL directly
+                cdn_url = upload_full_url
+                logger.debug(f"[Weixin] Using upload_full_url: {cdn_url[:100]}...")
+            elif upload_param:
+                # Old protocol: construct URL manually
+                cdn_url = (f"{api.cdn_base_url}/upload"
+                           f"?encrypted_query_param={quote(upload_param)}"
+                           f"&filekey={quote(filekey)}")
+                logger.debug(f"[Weixin] Using constructed cdn_url: {cdn_url[:100]}...")
+            else:
+                raise RuntimeError(f"[Weixin] getUploadUrl returned neither upload_full_url nor upload_param: {resp}")
 
             cdn_resp = requests.post(cdn_url, data=encrypted, headers={
                 "Content-Type": "application/octet-stream",
@@ -322,7 +334,7 @@ def upload_media_to_cdn(api: WeixinApi, file_path: str, to_user_id: str,
             download_param = cdn_resp.headers.get("x-encrypted-param", "")
             if not download_param:
                 raise RuntimeError("CDN response missing x-encrypted-param header")
-            logger.debug(f"[Weixin] CDN upload success attempt={attempt} filekey={filekey}")
+            logger.debug(f"[Weixin] CDN upload success attempt={attempt} filekey={filekey}, download_param={download_param[:50]}...")
             break
         except Exception as e:
             last_error = e

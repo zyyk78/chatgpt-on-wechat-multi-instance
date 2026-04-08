@@ -33,13 +33,13 @@ class AgentEventHandler:
     def handle_event(self, event):
         """
         Main event handler
-        
+
         Args:
             event: Event dict with type and data
         """
         event_type = event.get("type")
         data = event.get("data", {})
-        
+
         # Dispatch to specific handlers
         if event_type == "turn_start":
             self._handle_turn_start(data)
@@ -51,7 +51,7 @@ class AgentEventHandler:
             self._handle_tool_execution_start(data)
         elif event_type == "tool_execution_end":
             self._handle_tool_execution_end(data)
-        
+
         # Call original callback if provided
         if self.original_callback:
             self.original_callback(event)
