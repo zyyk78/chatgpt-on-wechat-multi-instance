@@ -65,6 +65,15 @@ class AgentEventHandler:
     def _handle_message_update(self, data):
         """Handle message update event (streaming text)"""
         delta = data.get("delta", "")
+
+        # If show_thinking is False and delta starts with [thinking] tag,
+        # this is thinking content that should not be sent to WeChat
+        from config import conf
+        if not conf().get("show_thinking", False):
+            if delta.startswith("[thinking] ") or delta.startswith("<think>"):
+                # Skip thinking content when show_thinking=False
+                return
+
         self.current_thinking += delta
     
     def _handle_message_end(self, data):
@@ -74,23 +83,28 @@ class AgentEventHandler:
 
         tool_calls = data.get("tool_calls", [])
 
-        # Only send thinking process if followed by tool calls
-        if tool_calls:
-            if self.current_thinking.strip():
+        # Log thinking content (for debugging/logging purposes) - always log regardless of show_thinking
+        if self.current_thinking.strip():
+            if tool_calls:
                 logger.info(f"💭 {self.current_thinking.strip()[:200]}{'...' if len(self.current_thinking) > 200 else ''}")
-                # Send thinking process to channel only if show_thinking is True
-                if show_thinking:
-                    self._send_to_channel(f"{self.current_thinking.strip()}")
-        else:
-            # No tool calls = final response (logged at agent_stream level)
-            if self.current_thinking.strip():
+            else:
                 logger.debug(f"💬 {self.current_thinking.strip()[:200]}{'...' if len(self.current_thinking) > 200 else ''}")
 
+        # For WeChat (show_thinking=false), thinking should NEVER be sent to channel
+        # Only send thinking if show_thinking=True AND there are tool_calls
+        if show_thinking and tool_calls and self.current_thinking.strip():
+            self._send_to_channel(f"{self.current_thinking.strip()}")
+
+        # Always clear thinking at the end of message
         self.current_thinking = ""
     
     def _handle_tool_execution_start(self, data):
-        """Handle tool execution start event - logged by agent_stream.py"""
-        pass
+        """Handle tool execution start event"""
+        from config import conf
+        # For WeChat (show_thinking=false), clear thinking immediately when tool execution starts
+        # so it won't be sent to the channel
+        if not conf().get("show_thinking", False):
+            self.current_thinking = ""
     
     def _handle_tool_execution_end(self, data):
         """Handle tool execution end event - logged by agent_stream.py"""
