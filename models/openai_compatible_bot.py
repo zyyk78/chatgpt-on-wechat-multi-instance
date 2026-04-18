@@ -112,7 +112,13 @@ class OpenAICompatibleBot:
             # Add reasoning_split=True for MiniMax models (always add, to separate thinking from content)
             model_name = request_params.get("model", "")
             if isinstance(model_name, str) and model_name.lower().startswith("minimax"):
-                request_params["extra_body"] = {"reasoning_split": True}
+                # Try extra_body first (SDK 1.0+), fall back to direct param (SDK 0.27.x)
+                if "extra_body" not in request_params:
+                    request_params["extra_body"] = {}
+                request_params["extra_body"]["reasoning_split"] = True
+                # Also add directly for older SDK versions that don't support extra_body
+                request_params["reasoning_split"] = True
+                logger.info(f"[{self.__class__.__name__}] Added reasoning_split for model: {model_name}")
 
             # Make API call with proper configuration
             api_key = api_config.get('api_key')
@@ -181,17 +187,33 @@ class OpenAICompatibleBot:
             for chunk in stream:
                 # Handle reasoning_details for MiniMax models
                 delta = chunk.choices[0].delta
-                reasoning_details = getattr(delta, "reasoning_details", [])
+                # Debug: log all available keys/attributes in delta
+                if hasattr(delta, 'keys'):
+                    delta_keys = list(delta.keys())
+                else:
+                    delta_keys = [k for k in dir(delta) if not k.startswith('_')]
+                logger.debug(f"[{self.__class__.__name__}] delta keys: {delta_keys}, delta type: {type(delta)}")
+                # Try both dict access and attribute access (OpenAI SDK may return pydantic model)
+                if isinstance(delta, dict):
+                    reasoning_details = delta.get("reasoning_details", [])
+                else:
+                    reasoning_details = getattr(delta, "reasoning_details", None)
+                    if reasoning_details is None:
+                        reasoning_details = []
+                    elif not isinstance(reasoning_details, list):
+                        reasoning_details = []
 
                 if reasoning_details:
                     logger.info(f"[{self.__class__.__name__}] thinking detected, show_thinking={show_thinking}")
                     first_chunk = True  # Track if this is the first chunk for adding [thinking] tag
+                    thinking_log_parts = []
                     for rd in reasoning_details:
                         if rd.get("text"):
                             content = rd["text"]
                             if first_chunk:
                                 content = "[thinking] " + content
                                 first_chunk = False
+                            thinking_log_parts.append(content)
                             if show_thinking:
                                 yield {
                                     "choices": [{
@@ -202,7 +224,9 @@ class OpenAICompatibleBot:
                                         }
                                     }]
                                 }
-                    # else: silently discard reasoning_details when show_thinking=False
+                    # Log thinking content at INFO level regardless of show_thinking
+                    if thinking_log_parts:
+                        logger.info(f"[{self.__class__.__name__}] thinking content: {''.join(thinking_log_parts)}")
 
                     # Remove reasoning_details from chunk to prevent duplicate handling
                     delta = dict(delta)

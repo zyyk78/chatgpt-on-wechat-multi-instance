@@ -315,11 +315,38 @@ class Godcmd(Plugin):
                     except Exception as e:
                         ok, result = False, "你没有设置私有GPT模型"
                 elif cmd == "reset":
+                    logger.info(f"[Godcmd] Reset command called: bottype={bottype}, session_id={session_id}, agent={conf().get('agent', False)}")
                     if bottype in [const.OPEN_AI, const.OPENAI, const.CHATGPT, const.CHATGPTONAZURE, const.LINKAI, const.BAIDU, const.XUNFEI, const.QWEN, const.GEMINI, const.ZHIPU_AI, const.CLAUDEAPI]:
                         bot.sessions.clear_session(session_id)
                         if Bridge().chat_bots.get(bottype):
                             Bridge().chat_bots.get(bottype).sessions.clear_session(session_id)
                         channel.cancel_session(session_id)
+                        logger.info(f"[Godcmd] Cleared bot and channel sessions for {session_id}")
+
+                        # Clear Agent messages if Agent mode is enabled
+                        if conf().get("agent", False):
+                            try:
+                                agent_bridge = Bridge().get_agent_bridge()
+                                agent = agent_bridge.get_agent(session_id=session_id)
+                                logger.info(f"[Godcmd] Got agent: {agent}, has_messages={hasattr(agent, 'messages')}, has_stream_executor={hasattr(agent, 'stream_executor')}")
+                                if agent:
+                                    if hasattr(agent, 'stream_executor') and agent.stream_executor and hasattr(agent.stream_executor, 'messages'):
+                                        agent.stream_executor.messages.clear()
+                                        logger.info(f"[Godcmd] Cleared stream_executor.messages for session {session_id}")
+                                    if hasattr(agent, 'messages'):
+                                        count = len(agent.messages) if agent.messages else 0
+                                        agent.messages.clear()
+                                        logger.info(f"[Godcmd] Cleared agent.messages ({count} items) for session {session_id}")
+                                # Also clear conversation store
+                                try:
+                                    from agent.memory import get_conversation_store
+                                    get_conversation_store().clear_session(session_id)
+                                    logger.info(f"[Godcmd] Cleared conversation store for session {session_id}")
+                                except Exception as e:
+                                    logger.warning(f"[Godcmd] Failed to clear conversation store: {e}")
+                            except Exception as e:
+                                logger.warning(f"[Godcmd] Failed to clear agent messages: {e}")
+
                         ok, result = True, "会话已重置"
                     else:
                         ok, result = False, "当前对话机器人不支持重置会话"
